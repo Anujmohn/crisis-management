@@ -45,6 +45,11 @@ class RecommendedDestinationItem(SchemaModel):
     distance_km: float
     suitability_classification: SuitabilityClassification
     suitability_score: float | None = None
+    distance_points: float | None = None
+    safety_points: float | None = None
+    availability_points: float | None = None
+    features_points: float | None = None
+    total_points: float | None = None
     suitability_reasons: list[str] = Field(default_factory=list)
     suitability_warnings: list[str] = Field(default_factory=list)
     route: RouteDetailItem | None = None

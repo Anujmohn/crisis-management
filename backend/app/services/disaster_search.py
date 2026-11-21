@@ -88,6 +88,68 @@ def evaluate_freshness(event: CrisisEvent, now: datetime) -> str:
     return "UNKNOWN"
 
 
+def generate_disaster_flow_path(event: CrisisEvent) -> dict[str, Any] | None:
+    """
+    Generates the directional flow path for active flood warning areas or
+    cyclone storm tracks across the affected hazard corridor.
+    """
+    loc_geo = safe_postgis_to_geojson(event.location)
+    coords = None
+    if loc_geo and "coordinates" in loc_geo:
+        coords = loc_geo["coordinates"]
+    elif event.affected_area is not None:
+        area_geo = safe_postgis_to_geojson(event.affected_area)
+        if area_geo and "coordinates" in area_geo:
+            c = area_geo["coordinates"]
+            if area_geo.get("type") == "MultiPolygon" and c and c[0] and c[0][0]:
+                coords = c[0][0][0]
+            elif c and c[0]:
+                coords = c[0][0]
+
+    if not coords or len(coords) < 2:
+        return None
+
+    lon, lat = float(coords[0]), float(coords[1])
+
+    if event.crisis_type == CrisisType.FLOOD:
+        # Downstream drainage vector in India
+        if lat > 24.0 and lon >= 88.0:
+            # Brahmaputra basin (flows W-SW then S)
+            dx, dy = -0.06, -0.05
+        elif lat > 24.0:
+            # Ganges-Yamuna basin (flows E-SE)
+            dx, dy = 0.08, -0.035
+        elif lon < 75.0:
+            # West-flowing rivers (Narmada / Tapi into Arabian Sea)
+            dx, dy = -0.07, -0.02
+        else:
+            # Peninsular East-flowing rivers (Mahanadi, Godavari, Krishna, Cauvery into Bay of Bengal)
+            dx, dy = 0.08, -0.03
+
+        pts = []
+        curr_x, curr_y = lon - (dx * 1.5), lat - (dy * 1.5)
+        for i in range(5):
+            meander = 0.015 if i % 2 == 1 else -0.015
+            pts.append([round(curr_x, 5), round(curr_y + (meander if abs(dx) > abs(dy) else 0), 5)])
+            curr_x += dx
+            curr_y += dy
+
+        return {"type": "LineString", "coordinates": pts}
+
+    elif event.crisis_type == CrisisType.CYCLONE:
+        # Cyclone landfall storm track corridor (SE to NW curved inland)
+        pts = [
+            [round(lon + 0.35, 5), round(lat - 0.25, 5)],
+            [round(lon + 0.15, 5), round(lat - 0.10, 5)],
+            [round(lon, 5), round(lat, 5)],
+            [round(lon - 0.18, 5), round(lat + 0.12, 5)],
+            [round(lon - 0.32, 5), round(lat + 0.28, 5)],
+        ]
+        return {"type": "LineString", "coordinates": pts}
+
+    return None
+
+
 def get_nearby_disasters(
     session: Session,
     latitude: float,
@@ -219,6 +281,7 @@ def get_nearby_disasters(
                 status=event.status,
                 location=safe_postgis_to_geojson(event.location),
                 affected_area=safe_postgis_to_geojson(event.affected_area),
+                flow_path=generate_disaster_flow_path(event),
                 distance_km=distance_km,
                 started_at=event.started_at,
                 expires_at=event.expires_at,
@@ -310,6 +373,7 @@ def get_all_active_disasters(
                 status=event.status,
                 location=safe_postgis_to_geojson(event.location),
                 affected_area=safe_postgis_to_geojson(event.affected_area),
+                flow_path=generate_disaster_flow_path(event),
                 distance_km=None,
                 started_at=event.started_at,
                 expires_at=event.expires_at,

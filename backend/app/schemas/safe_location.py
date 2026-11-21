@@ -115,6 +115,11 @@ class SafeLocationItem(SchemaModel):
     accessibility_status: AccessibilityStatus | None = None
     capacity: int | None = None
     distance_km: float | None = None
+    distance_points: float | None = None
+    safety_points: float | None = None
+    availability_points: float | None = None
+    features_points: float | None = None
+    total_points: float | None = None
     sources: list[SafeLocationSourceSummary] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     created_at: AwareDatetime

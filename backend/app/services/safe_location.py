@@ -19,6 +19,11 @@ from app.schemas.safe_location import (
     SafeLocationSourceSummary,
 )
 from app.services.disaster_search import safe_postgis_to_geojson
+from app.services.recommendation_engine import (
+    calculate_specification_points,
+    extract_location_coordinates,
+)
+from app.services.safe_location_osm import discover_and_sync_candidate_locations
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +98,21 @@ def format_safe_location_item(
     loc_geojson = safe_postgis_to_geojson(loc.location) or {"type": "Point", "coordinates": [0.0, 0.0]}
     bound_geojson = safe_postgis_to_geojson(loc.boundary) if loc.boundary is not None else None
 
+    dist_pts: float | None = None
+    safe_pts: float | None = None
+    avail_pts: float | None = None
+    feat_pts: float | None = None
+    tot_pts: float | None = None
+
+    if distance_km is not None:
+        c_lat, c_lon = extract_location_coordinates(loc)
+        dist_pts, safe_pts, avail_pts, feat_pts, tot_pts = calculate_specification_points(
+            loc=loc,
+            lat=c_lat,
+            lon=c_lon,
+            distance_km=distance_km,
+        )
+
     return SafeLocationItem(
         id=loc.id,
         name=loc.name,
@@ -106,6 +126,11 @@ def format_safe_location_item(
         accessibility_status=loc.accessibility_status,
         capacity=loc.capacity,
         distance_km=distance_km,
+        distance_points=dist_pts,
+        safety_points=safe_pts,
+        availability_points=avail_pts,
+        features_points=feat_pts,
+        total_points=tot_pts,
         sources=sources,
         missing_information=extract_missing_information(loc),
         created_at=loc.created_at,
@@ -133,22 +158,72 @@ def get_nearby_safe_locations(
     dist_m = func.ST_Distance(SafeLocation.location.cast(Geography), user_geog).label("distance_m")
     search_radius_m = float(radius_km) * 1000.0
 
-    query = (
-        select(SafeLocation, dist_m)
-        .options(
-            selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
+    # Discover candidate locations dynamically if none exist near user coordinates
+    existing_count = session.scalar(
+        select(func.count(SafeLocation.id)).where(
+            func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m)
         )
-        .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m))
     )
+    try:
+        cnt = int(existing_count) if existing_count is not None else 0
+    except (TypeError, ValueError):
+        cnt = 999
 
-    if category:
-        query = query.where(func.lower(SafeLocation.category) == category.strip().lower())
+    if cnt < 3:
+        try:
+            discover_and_sync_candidate_locations(
+                session=session,
+                latitude=latitude,
+                longitude=longitude,
+                radius_km=float(radius_km),
+            )
+        except Exception:
+            pass
 
-    if verification_status:
-        query = query.where(SafeLocation.verification_status == verification_status)
+    # Progressive search starting from 100 meters (0.1 km) near the user,
+    # expanding until enough candidates are collected for diverse nearby choices.
+    search_tiers_km = [0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, max(25.0, float(radius_km))]
+    rows = []
+    target_count = max(3, min(limit, 10))
 
-    query = query.order_by(dist_m.asc()).limit(limit)
-    rows = session.execute(query).all()
+    for tier_km in search_tiers_km:
+        tier_m = tier_km * 1000.0
+        tier_query = (
+            select(SafeLocation, dist_m)
+            .options(
+                selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
+            )
+            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m))
+        )
+        if category:
+            tier_query = tier_query.where(func.lower(SafeLocation.category) == category.strip().lower())
+        if verification_status:
+            tier_query = tier_query.where(SafeLocation.verification_status == verification_status)
+        tier_query = tier_query.order_by(dist_m.asc()).limit(limit)
+
+        tier_rows = session.execute(tier_query).all()
+        if tier_rows:
+            rows = tier_rows
+            if len(rows) >= target_count:
+                break
+
+    if not rows:
+        query = (
+            select(SafeLocation, dist_m)
+            .options(
+                selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
+            )
+            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m))
+        )
+
+        if category:
+            query = query.where(func.lower(SafeLocation.category) == category.strip().lower())
+
+        if verification_status:
+            query = query.where(SafeLocation.verification_status == verification_status)
+
+        query = query.order_by(dist_m.asc()).limit(limit)
+        rows = session.execute(query).all()
 
     items: list[SafeLocationItem] = []
     official_count = 0

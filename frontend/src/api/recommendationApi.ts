@@ -53,6 +53,11 @@ export interface RecommendedDestinationItem {
   distance_km: number;
   suitability_classification: SuitabilityClassification;
   suitability_score: number | null;
+  distance_points?: number | null;
+  safety_points?: number | null;
+  availability_points?: number | null;
+  features_points?: number | null;
+  total_points?: number | null;
   suitability_reasons: string[];
   suitability_warnings: string[];
   route: RouteDetailItem | null;
@@ -103,6 +108,11 @@ export interface LocationSuitabilityAssessmentItem {
   disaster_type: DisasterType;
   suitability_classification: SuitabilityClassification;
   suitability_score: number | null;
+  distance_points?: number | null;
+  safety_points?: number | null;
+  availability_points?: number | null;
+  features_points?: number | null;
+  total_points?: number | null;
   data_completeness: number | null;
   hard_exclusion_status: boolean;
   hard_exclusion_reasons: string[];

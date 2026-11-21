@@ -46,6 +46,7 @@ class DisasterEventSummary(SchemaModel):
     status: CrisisStatus
     location: GeoJSONPoint | None = None
     affected_area: GeoJSONMultiPolygon | None = None
+    flow_path: GeoJSONGeometry | None = None
     distance_km: float | None = None
     started_at: datetime | None = None
     expires_at: datetime | None = None

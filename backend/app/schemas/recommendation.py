@@ -97,6 +97,11 @@ class LocationSuitabilityAssessmentItem(SchemaModel):
     suitability_classification: SuitabilityClassification
     suitability_score: float | None = None
     data_completeness: float | None = None
+    distance_points: float | None = None
+    safety_points: float | None = None
+    availability_points: float | None = None
+    features_points: float | None = None
+    total_points: float | None = None
     hard_exclusion_status: bool = False
     hard_exclusion_reasons: list[str] = Field(default_factory=list)
     supporting_evidence: list[str] = Field(default_factory=list)

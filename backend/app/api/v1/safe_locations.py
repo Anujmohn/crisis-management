@@ -8,18 +8,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
-from app.models.enums import VerificationStatus
+from app.models.enums import CrisisType, VerificationStatus
 from app.schemas.safe_location import (
     NearbySafeLocationsResponse,
     SafeLocationDetailResponse,
     SafeLocationSyncResponse,
 )
+from app.schemas.safe_place import FindSafePlacesRequest, FindSafePlacesResponse
 from app.services.safe_location import (
     get_all_safe_locations,
     get_nearby_safe_locations,
     get_safe_location_by_id,
 )
 from app.services.safe_location_ingestion import sync_all_safe_location_sources
+from app.services.safe_place_engine import find_safe_places_near_user
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +158,56 @@ def get_all_locations(
         session=session,
         category=category,
         verification_status=verification_status,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/find-safe-places",
+    response_model=FindSafePlacesResponse,
+    summary="Separate Engine to find safe place near user location (starts at 100m, capped 1-5km)",
+    description=(
+        "Dedicated separate discovery engine for safe places near the user location. "
+        "Starts searching at 100 meters radius from user location. Progressively expands outward "
+        "until safe locations meeting the disaster specification are found, strictly under 1 to 5 km. "
+        "Calculates complete earthquake fields (distance, area, open places, hilly stone-crushing risk), "
+        "flood fields (distance, elevation, safety factor, higher/wider safe buildings, flood flow prediction, transect MSL heights), "
+        "and sea typhoon fields (distance, beach vs inland effect, safety factor)."
+    ),
+)
+def find_safe_places_post(
+    payload: FindSafePlacesRequest,
+    session: Session = Depends(get_db),
+) -> FindSafePlacesResponse:
+    return find_safe_places_near_user(
+        session=session,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        disaster_type=payload.disaster_type,
+        max_radius_km=payload.max_radius_km,
+        limit=payload.limit,
+    )
+
+
+@router.get(
+    "/find-safe-places",
+    response_model=FindSafePlacesResponse,
+    summary="Separate Engine to find safe place near user location via GET query",
+)
+def find_safe_places_get(
+    latitude: Annotated[float, Query(ge=-90.0, le=90.0)],
+    longitude: Annotated[float, Query(ge=-180.0, le=180.0)],
+    disaster_type: Annotated[CrisisType | None, Query()] = None,
+    max_radius_km: Annotated[float, Query(ge=0.5, le=5.0)] = 5.0,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    session: Session = Depends(get_db),
+) -> FindSafePlacesResponse:
+    return find_safe_places_near_user(
+        session=session,
+        latitude=latitude,
+        longitude=longitude,
+        disaster_type=disaster_type,
+        max_radius_km=max_radius_km,
         limit=limit,
     )
 

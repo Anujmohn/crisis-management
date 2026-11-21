@@ -59,6 +59,7 @@ export interface DisasterEventSummary {
   status: CrisisStatus;
   location: GeoJSONPoint | null;
   affected_area: GeoJSONMultiPolygon | null;
+  flow_path?: { type: string; coordinates: any } | null;
   distance_km: number | null;
   started_at: string | null;
   expires_at: string | null;

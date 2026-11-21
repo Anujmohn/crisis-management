@@ -506,6 +506,11 @@ def generate_unified_recommendations(
             distance_km=cand.distance_km,
             suitability_classification=cand.suitability_classification,
             suitability_score=cand.suitability_score,
+            distance_points=cand.distance_points,
+            safety_points=cand.safety_points,
+            availability_points=cand.availability_points,
+            features_points=cand.features_points,
+            total_points=cand.total_points,
             suitability_reasons=cand.supporting_evidence,
             suitability_warnings=cand.warnings,
             route=route_resp.primary_route,
@@ -541,12 +546,14 @@ def generate_unified_recommendations(
         # Tier 4: Route hazard intersections count (fewer is better)
         hazard_count = item.route.hazard_intersections_count if item.route else 99
 
-        # Tier 5: Travel time / distance (closer/faster only within the same safety tier)
-        travel_time = (
+        # Tier 5: Travel time / distance combined with specification match points
+        raw_travel_time = (
             item.route.estimated_time_seconds
             if (item.route and item.route.estimated_time_seconds)
             else (item.distance_km * 120.0)
         )
+        pts_penalty = (100.0 - float(item.total_points)) if item.total_points else 50.0
+        travel_time = raw_travel_time + pts_penalty * 5.0
 
         return (suit_tier, route_tier, verif_tier, hazard_count, travel_time)
 
@@ -558,6 +565,10 @@ def generate_unified_recommendations(
         dest.ranking_score = round(max(0.1, 1.0 - (idx - 1) * 0.05), 2)
 
         reasons: list[str] = []
+        if dest.total_points is not None:
+            reasons.append(
+                f"Specification Match: {dest.total_points:.0f}/100 pts (Distance: {dest.distance_points:.0f} | Safety: {dest.safety_points:.0f} | Availability: {dest.availability_points:.0f} | Features: {dest.features_points:.0f})"
+            )
         if dest.official_designation == DesignationStatus.OFFICIAL or dest.verification_status == VerificationStatus.VERIFIED:
             reasons.append("Officially designated/verified facility")
         else:
