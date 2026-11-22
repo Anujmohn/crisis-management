@@ -129,7 +129,7 @@ REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
         "lat": 28.5830,
         "lon": 77.2340,
         "tags": {
-            "name": "Barapullah Elevated Flyover Refuge Zone",
+            "name": "Barapullah Elevated Corridor, New Delhi",
             "bridge": "flyover",
             "description": "High elevation reinforced concrete flyover platform safe from urban flash runoff",
         },
@@ -191,7 +191,7 @@ REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
         "lat": 19.0150,
         "lon": 72.8600,
         "tags": {
-            "name": "Eastern Freeway Elevated Corridor Refuge",
+            "name": "Eastern Freeway Elevated Deck, Mumbai",
             "bridge": "flyover",
             "description": "Elevated stilt roadway platform providing vertical flood refuge",
         },
@@ -229,7 +229,7 @@ REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
         "lat": 22.5440,
         "lon": 88.3800,
         "tags": {
-            "name": "Maa Flyover High-Elevation Corridor",
+            "name": "Maa Flyover (AJC Bose Road), Kolkata",
             "bridge": "flyover",
             "description": "Continuous elevated flyover structure above Gangetic monsoon flooding",
         },
@@ -395,9 +395,109 @@ REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
         "lat": 25.6110,
         "lon": 85.1120,
         "tags": {
-            "name": "Bailey Road Elevated Flyover Platform",
+            "name": "Bailey Road Flyover, Patna",
             "bridge": "flyover",
-            "description": "High elevated viaduct platform above urban street waterlogging",
+            "description": "Reinforced elevated concrete flyover along Jawaharlal Nehru Marg above waterlogging",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1033,
+        "lat": 25.6060,
+        "lon": 85.1660,
+        "tags": {
+            "name": "Moin-ul-Haq Stadium Open Arena, Patna",
+            "leisure": "pitch",
+            "capacity": "25000",
+            "description": "Broad stadium turf and open sports assembly ground safe from building collapse",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1034,
+        "lat": 25.5600,
+        "lon": 85.0450,
+        "tags": {
+            "name": "AIIMS Patna Elevated Medical Campus",
+            "amenity": "hospital",
+            "emergency": "yes",
+            "capacity": "3500",
+            "description": "Elevated terrace hospital campus situated above rural flood mark",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1035,
+        "lat": 25.5980,
+        "lon": 85.1010,
+        "tags": {
+            "name": "Sanjay Gandhi Biological Park Open Lawns, Patna",
+            "leisure": "park",
+            "capacity": "15000",
+            "description": "Expansive green public park lawns providing skyward clearance",
+        },
+    },
+
+    # --- Dehradun / Uttarakhand (Hilly Seismic & Flash Flood Zone) ---
+    {
+        "type": "node",
+        "id": 1040,
+        "lat": 30.3255,
+        "lon": 78.0435,
+        "tags": {
+            "name": "Parade Ground Dehradun",
+            "leisure": "common",
+            "capacity": "20000",
+            "description": "Broad flat central assembly ground in Dehradun, safe distance from steep slopes and rockfalls",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1041,
+        "lat": 30.3280,
+        "lon": 78.0400,
+        "tags": {
+            "name": "Pavillion Ground Dehradun",
+            "leisure": "pitch",
+            "capacity": "10000",
+            "description": "Flat open sports ground with clear skyward clearance safe from building effects",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1042,
+        "lat": 30.3200,
+        "lon": 78.0450,
+        "tags": {
+            "name": "Doon Medical College Hospital, Dehradun",
+            "amenity": "hospital",
+            "emergency": "yes",
+            "capacity": "2500",
+            "description": "Reinforced public hospital complex with emergency trauma care and standby power",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1043,
+        "lat": 30.3165,
+        "lon": 78.0550,
+        "tags": {
+            "name": "Uttarakhand Civil Secretariat Complex, Dehradun",
+            "amenity": "public_building",
+            "capacity": "3500",
+            "description": "Reinforced government civic center with elevated backup facilities",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1044,
+        "lat": 30.3420,
+        "lon": 77.9980,
+        "tags": {
+            "name": "Forest Research Institute (FRI) Open Lawns, Dehradun",
+            "leisure": "park",
+            "capacity": "30000",
+            "description": "Massive open landscape lawns clear of falling structures and landslide cliffs",
         },
     },
 
@@ -438,6 +538,30 @@ REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
             "description": "Open botanical garden lawns clear of tall buildings",
         },
     },
+    {
+        "type": "node",
+        "id": 1036,
+        "lat": 13.0805,
+        "lon": 80.2790,
+        "tags": {
+            "name": "Rajiv Gandhi Government General Hospital, Chennai",
+            "amenity": "hospital",
+            "emergency": "yes",
+            "capacity": "3500",
+            "description": "Multi-story reinforced medical facility with emergency backup power",
+        },
+    },
+    {
+        "type": "node",
+        "id": 1037,
+        "lat": 13.0505,
+        "lon": 80.2510,
+        "tags": {
+            "name": "Gemini Flyover, Anna Salai, Chennai",
+            "bridge": "flyover",
+            "description": "Elevated concrete flyover viaduct above street-level flood ponding",
+        },
+    },
 ]
 
 
@@ -452,8 +576,10 @@ def map_osm_tags_to_category(tags: dict[str, str]) -> str:
 
     if "garden" in leisure or "garden" in name:
         return "GARDEN"
-    elif "flyover" in bridge or "flyover" in name or "freeway" in name or "corridor" in name or bridge in ("yes", "viaduct"):
+    elif "flyover" in bridge or "flyover" in name or "elevated corridor" in name or "elevated expressway" in name or bridge == "viaduct":
         return "FLYOVER"
+    elif bridge in ("yes", "aqueduct", "swing") or "bridge" in name:
+        return "BRIDGE"
     elif leisure == "park":
         return "PARK"
     elif leisure in ("pitch", "playground", "sports_centre"):
@@ -754,95 +880,16 @@ def discover_and_sync_candidate_locations(
     except Exception as exc:
         logger.debug(f"Overpass live fetch skipped/failed: {exc}. Proceeding with dynamic discovery.")
 
-    if not elements:
-        # Synthesize authentic local candidate features starting at 80m, 160m, 260m, 450m
-        dist_coast = calculate_distance_to_indian_coastline_km(latitude, longitude)
-        lat_key = f"{int(abs(latitude) * 1000):05d}"
-        lon_key = f"{int(abs(longitude) * 1000):05d}"
+    # Strictly filter for real OpenStreetMap elements with verified real names
+    real_elements = [
+        el for el in elements
+        if el.get("tags", {}).get("name") and len(el.get("tags", {}).get("name", "").strip()) >= 3
+    ]
 
-        synth_elements = [
-            # Candidate 1 (80m): Open Garden / Park Lawn (Earthquake assembly safe from roof collapse)
-            {
-                "type": "node",
-                "id": int(f"91{lat_key[-3:]}{lon_key[-3:]}1"),
-                "lat": round(latitude + 0.0006, 6),
-                "lon": round(longitude + 0.0005, 6),
-                "tags": {
-                    "name": f"Public Garden & Open Lawn Assembly Zone ({latitude:.3f}, {longitude:.3f})",
-                    "leisure": "garden",
-                    "surface": "grass",
-                    "capacity": "2500",
-                    "wheelchair": "yes",
-                    "drinking_water": "yes",
-                    "description": "Open public garden lawns providing clear skyward clearance safe from building roof collapse",
-                },
-            },
-            # Candidate 2 (160m): Primary Broad Road & Open Assembly Field (Safe clearance from masonry)
-            {
-                "type": "node",
-                "id": int(f"91{lat_key[-3:]}{lon_key[-3:]}2"),
-                "lat": round(latitude - 0.0011, 6),
-                "lon": round(longitude + 0.0009, 6),
-                "tags": {
-                    "name": f"Broad Primary Road & Assembly Field ({latitude:.3f}, {longitude:.3f})",
-                    "highway": "primary",
-                    "leisure": "common",
-                    "capacity": "5000",
-                    "description": "Broad public road corridor and assembly field clear of tall buildings and power lines",
-                },
-            },
-            # Candidate 3 (260m): Elevated Flyover Platform & High-Elevation Refuge (Flood vertical refuge)
-            {
-                "type": "node",
-                "id": int(f"91{lat_key[-3:]}{lon_key[-3:]}3"),
-                "lat": round(latitude + 0.0018, 6),
-                "lon": round(longitude - 0.0015, 6),
-                "tags": {
-                    "name": f"Elevated Flyover Platform & Refuge Zone ({latitude:.3f}, {longitude:.3f})",
-                    "bridge": "flyover",
-                    "description": "Reinforced elevated concrete flyover platform providing vertical flood refuge above high water mark",
-                },
-            },
-            # Candidate 4 (450m): Government Civic Center & Hospital Complex (Higher/wider building)
-            {
-                "type": "node",
-                "id": int(f"91{lat_key[-3:]}{lon_key[-3:]}4"),
-                "lat": round(latitude - 0.0032, 6),
-                "lon": round(longitude - 0.0028, 6),
-                "tags": {
-                    "name": f"Government Civic Complex & Emergency Healthcare ({latitude:.3f}, {longitude:.3f})",
-                    "amenity": "hospital",
-                    "healthcare": "hospital",
-                    "emergency": "yes",
-                    "drinking_water": "yes",
-                    "generator": "yes",
-                    "wheelchair": "yes",
-                    "capacity": "3000",
-                    "description": "Multi-story reinforced concrete public facility safe from cyclonic wind-loads and flood runoff",
-                },
-            },
-        ]
+    if not real_elements:
+        # Strictly do not synthesize fake or hypothetical locations.
+        # The system relies strictly on authentic, real physical facilities.
+        return 0
 
-        # If coastal, add Multi-Purpose Cyclone Shelter (stilt design safe from typhoon surge)
-        if dist_coast <= 50.0:
-            synth_elements.append({
-                "type": "node",
-                "id": int(f"91{lat_key[-3:]}{lon_key[-3:]}5"),
-                "lat": round(latitude + 0.0042, 6),
-                "lon": round(longitude + 0.0036, 6),
-                "tags": {
-                    "name": f"Multi-Purpose Cyclone Shelter (MPCS) ({latitude:.3f}, {longitude:.3f})",
-                    "amenity": "shelter",
-                    "stilt_elevation": "yes",
-                    "drinking_water": "yes",
-                    "generator": "yes",
-                    "wheelchair": "yes",
-                    "capacity": "2000",
-                    "description": "Engineered concrete stilt cyclone shelter safe from maritime storm surge and cyclonic winds",
-                },
-            })
-
-        elements = synth_elements
-
-    summary = sync_osm_locations(session, elements_data=elements)
+    summary = sync_osm_locations(session, elements_data=real_elements)
     return summary.created

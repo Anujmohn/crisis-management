@@ -6,7 +6,7 @@ from typing import Any
 
 from geoalchemy2 import Geography
 from shapely.geometry import shape
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import DesignationStatus, VerificationStatus
@@ -158,10 +158,27 @@ def get_nearby_safe_locations(
     dist_m = func.ST_Distance(SafeLocation.location.cast(Geography), user_geog).label("distance_m")
     search_radius_m = float(radius_km) * 1000.0
 
+    # Purge any historical synthetic/placeholder locations
+    try:
+        session.execute(
+            delete(SafeLocation).where(
+                or_(
+                    SafeLocation.name.ilike("%refuge zone (%%"),
+                    SafeLocation.name.ilike("%assembly zone (%%"),
+                )
+            )
+        )
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.debug(f"Synthetic cleanup note in get_nearby: {exc}")
+
     # Discover candidate locations dynamically if none exist near user coordinates
     existing_count = session.scalar(
         select(func.count(SafeLocation.id)).where(
-            func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m)
+            func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m),
+            ~SafeLocation.name.ilike("%refuge zone (%%"),
+            ~SafeLocation.name.ilike("%assembly zone (%%"),
         )
     )
     try:
@@ -193,7 +210,11 @@ def get_nearby_safe_locations(
             .options(
                 selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
             )
-            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m))
+            .where(
+                func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m),
+                ~SafeLocation.name.ilike("%refuge zone (%%"),
+                ~SafeLocation.name.ilike("%assembly zone (%%"),
+            )
         )
         if category:
             tier_query = tier_query.where(func.lower(SafeLocation.category) == category.strip().lower())
@@ -213,7 +234,11 @@ def get_nearby_safe_locations(
             .options(
                 selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
             )
-            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m))
+            .where(
+                func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m),
+                ~SafeLocation.name.ilike("%refuge zone (%%"),
+                ~SafeLocation.name.ilike("%assembly zone (%%"),
+            )
         )
 
         if category:

@@ -191,19 +191,10 @@ def evaluate_earthquake_suitability(
 def estimate_height_from_sea_level_msl(lat: float, lon: float, geo_env_val: str | None = None) -> float:
     """
     Estimates height from sea level (meters MSL) for a geographical point in India
-    based on coastal proximity, regional river basin elevation gradients, and topography.
+    based on authoritative city elevation data, coastal proximity, and regional topography.
     """
-    dist_coast = calculate_distance_to_indian_coastline_km(lat, lon)
-    if geo_env_val == "HILLY_OR_MOUNTAINOUS" or (lat > 29.5 and lon < 80.0):
-        return max(600.0, round((lat - 25.0) * 120.0 + 400.0, 1))
-    elif dist_coast <= 35.0:
-        return max(2.5, round(dist_coast * 0.8 + 2.0, 1))
-    elif lat > 24.0 and lon < 85.0:
-        return max(35.0, round(220.0 - (lon - 77.0) * 22.0, 1))
-    elif lat > 24.0 and lon >= 85.0:
-        return max(15.0, round(120.0 - (lon - 85.0) * 12.0, 1))
-    else:
-        return max(150.0, round(450.0 - dist_coast * 0.5, 1))
+    from app.services.city_elevation_data import get_city_height_from_sea_level
+    return get_city_height_from_sea_level(lat, lon)
 
 
 def evaluate_flood_transect_heights(

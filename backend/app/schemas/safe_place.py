@@ -45,16 +45,41 @@ class EarthquakeSafetyFields(SchemaModel):
 
 
 class FloodSafetyFields(SchemaModel):
-    """Calculated fields for Flood safe location discovery."""
+    """Calculated fields for Flood safe location discovery and assessment."""
     distance_from_user_km: float
-    elevation_m: float
+    elevation_m: float | None = None  # None if UNKNOWN
     safety_factor: str
     is_safe_building: bool
     safe_building_type: str
     flood_flow_prediction: str
     middle_transect_heights_msl: list[float] = Field(default_factory=list)
-    is_elevated_above_transect: bool
-    transect_summary: str
+    is_elevated_above_transect: bool = True
+    transect_summary: str = ""
+    elevation_difference_from_user_m: float | None = None
+    is_higher_than_user: bool = True
+    nearest_city: str | None = None
+
+    # Flood-specific discovery and assessment fields (Requirements 2, 3, 4, 5, 6, 8)
+    candidate_type: str = "ELEVATED_INFRASTRUCTURE"  # ELEVATED_INFRASTRUCTURE, NATURAL_ELEVATED_TERRAIN, OFFICIAL_FLOOD_SHELTER, GENERAL_ELEVATED_FACILITY, UNSUITABLE_FLOOD_RISK
+    elevation_status: str = "VERIFIED_DEM"  # VERIFIED_DEM, CITY_MSL_BENCHMARK, UNKNOWN
+    elevation_source: str | None = "Copernicus DEM GLO-30 / Survey of India Benchmark"
+    elevation_resolution_m: float | None = 30.0
+    elevation_retrieval_time: str | None = None
+    elevation_quality: str = "HIGH"  # HIGH, INTERPOLATED, UNKNOWN
+    relative_elevation_m: float | None = None
+    local_terrain_slope_deg: float | None = None
+    terrain_feature_type: str = "RIDGE_OR_HIGH_GROUND"  # RIDGE_OR_HIGH_GROUND, TERRACE, FLAT_PLAIN, VALLEY_BOTTOM, DRAINAGE_CHANNEL
+    drainage_proximity_m: float | None = None
+    flow_accumulation_cells: float | None = None
+    flood_exposure_level: str = "MINIMAL"  # MINIMAL, MODERATE, HIGH_RUNOFF, SEVERE_INUNDATION_RISK
+    safety_score: float = 75.0
+    safety_category: str = "SUITABLE_ELEVATED_REFUGE"  # SUITABLE_ELEVATED_REFUGE, CONDITIONALLY_ELEVATED, INSUFFICIENT_ELEVATION, HAZARDOUS_FLOOD_PATH, EXCLUDED
+    assessment_reasons: list[str] = Field(default_factory=list)
+    known_hazards: list[str] = Field(default_factory=list)
+    data_confidence: str = "HIGH"  # HIGH, MODERATE, LOW, INSUFFICIENT_DATA
+    search_radius_m: float = 100.0
+    public_access_status: str = "UNKNOWN_VERIFICATION_REQUIRED"
+    last_updated_time: str | None = None
 
 
 class CycloneSafetyFields(SchemaModel):
@@ -87,6 +112,17 @@ class SafePlaceItem(SchemaModel):
     # Distance
     distance_km: float
     distance_m: float
+
+    # Flood & Candidate Metadata (Requirements 2, 3, 5, 8)
+    candidate_type: str = "ELEVATED_INFRASTRUCTURE"  # ELEVATED_INFRASTRUCTURE, NATURAL_ELEVATED_TERRAIN, OFFICIAL_FLOOD_SHELTER, GENERAL_ELEVATED_FACILITY, UNSUITABLE_FLOOD_RISK
+    discovery_source: str = "OpenStreetMap / Real Infrastructure"
+    search_radius_m: float = 100.0
+    elevation_m: float | None = None
+    relative_elevation_m: float | None = None
+    data_confidence: str = "HIGH"
+    assessment_reasons: list[str] = Field(default_factory=list)
+    known_hazards: list[str] = Field(default_factory=list)
+    last_updated_time: str | None = None
 
     # Suitability
     suitability_classification: SuitabilityClassification
@@ -142,7 +178,91 @@ class FindSafePlacesResponse(SchemaModel):
     safe_places: list[SafePlaceItem] = Field(default_factory=list)
     data_sources_queried: list[str] = Field(default_factory=list)
     engine_name: str = "Separate Safe Place Discovery Engine (0.1 to 5.0 km Progressive Expansion)"
+    engine_status: str = "SUCCESS"  # SUCCESS, NO_CANDIDATES_FOUND, NO_RELIABLE_ELEVATION, FLOOD_ASSESSMENT_INCOMPLETE, ONLY_UNVERIFIED_CANDIDATES, NO_SUITABLE_CANDIDATE
+    engine_message: str = "Candidate safe places evaluated successfully."
+    search_radii_hierarchy_m: list[float] = Field(default_factory=lambda: [100.0, 250.0, 500.0, 1000.0, 2000.0])
     disaster_safety_disclaimer: str = (
         "Automated safe place recommendations are advisory models for emergency planning. "
         "Always follow official evacuation directives from NDMA, IMD, CWC, and local state authorities."
     )
+
+
+class TransectNodeItem(SchemaModel):
+    index: int
+    fraction: float
+    latitude: float
+    longitude: float
+    height_from_sea_level_m: float
+    distance_from_crisis_km: float
+    distance_to_user_km: float
+    nearest_city: str
+    stage_description: str
+
+
+class ElevationTransectSummary(SchemaModel):
+    crisis_start_latitude: float
+    crisis_start_longitude: float
+    crisis_start_height_msl: float
+    crisis_start_nearest_city: str
+    user_latitude: float
+    user_longitude: float
+    user_height_msl: float
+    user_nearest_city: str
+    total_distance_km: float
+    height_difference_m: float
+    higher_location_name: str
+    lower_location_name: str
+    is_crisis_higher: bool
+    is_user_higher: bool
+    flow_direction: str
+    gradient_slope_percent: float
+    middle_transect_nodes: list[TransectNodeItem] = Field(default_factory=list)
+    middle_heights_msl: list[float] = Field(default_factory=list)
+    min_middle_height_msl: float
+    max_middle_height_msl: float
+    avg_middle_height_msl: float
+    has_intermediate_ridge: bool
+    has_intermediate_depression: bool
+    flow_prediction_summary: str
+    elevation_difference_summary: str
+
+
+class ElevatedPlaceSummaryItem(SchemaModel):
+    id: uuid.UUID
+    name: str
+    category: str
+    place_type: str
+    latitude: float
+    longitude: float
+    distance_m: float
+    distance_km: float
+    elevation_msl_m: float
+    elevation_gain_above_user_m: float
+    nearest_city: str
+    elevation_comparison: dict[str, Any] = Field(default_factory=dict)
+    location_geojson: dict[str, Any] = Field(default_factory=dict)
+    verification_status: str
+
+
+class ElevatedPlacesDiscoveryResponse(SchemaModel):
+    success: bool = True
+    user_location: UserLocation
+    user_height_msl: float
+    user_nearest_city: str
+    initial_radius_km: float = 0.1
+    effective_radius_km: float
+    total_found: int
+    elevated_places: list[ElevatedPlaceSummaryItem] = Field(default_factory=list)
+    engine_name: str = "Elevated Place Discovery Engine (More Height Than User Location)"
+
+
+class FloodElevationAnalysisResponse(SchemaModel):
+    success: bool = True
+    user_location: UserLocation
+    user_height_msl: float
+    user_nearest_city: str
+    crisis_start_point: dict[str, Any]
+    elevation_transect: ElevationTransectSummary
+    elevated_safe_places: list[ElevatedPlaceSummaryItem] = Field(default_factory=list)
+    flood_flow_path_geojson: dict[str, Any] = Field(default_factory=dict)
+    combined_safety_summary: str

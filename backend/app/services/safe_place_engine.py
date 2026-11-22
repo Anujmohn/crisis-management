@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from geoalchemy2 import Geography
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.core import CrisisEvent
@@ -28,7 +28,15 @@ from app.schemas.safe_place import (
     SafePlaceItem,
     SpecificationMatchPoints,
 )
+from app.services.city_elevation_data import (
+    calculate_elevation_difference,
+    find_nearest_city_elevation,
+    get_city_height_from_sea_level,
+)
 from app.services.cyclone_assessment import calculate_distance_to_indian_coastline_km
+from app.services.elevation_transect_engine import (
+    compute_elevation_between_crisis_and_user,
+)
 from app.services.flood_assessment import classify_geographical_environment
 from app.services.recommendation_engine import (
     calculate_specification_points,
@@ -42,7 +50,8 @@ from app.services.recommendation_engine import (
     safe_postgis_to_geojson,
 )
 from app.services.safe_location import extract_missing_information
-from app.services.safe_location_osm import discover_and_sync_candidate_locations
+from app.services.safe_location_ncrmp import sync_ncrmp_shelters
+from app.services.safe_location_osm import discover_and_sync_candidate_locations, sync_osm_locations
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +125,7 @@ def compute_flood_safety_fields(
     3. Safety factor (safe from upcoming flood direction and effect).
     4. Places like higher and wider buildings, flyovers, government places with high elevation.
     5. Calculate or predict flow of the flood.
-    - If elevation data is not available, uses 'height from sea level' across intermediate transect.
+    - Uses authoritative 'height from sea level' across city elevation dataset and intermediate transect.
     """
     cat = (loc.category or "").upper()
     is_flyover = "FLYOVER" in cat or "BRIDGE" in cat
@@ -132,13 +141,29 @@ def compute_flood_safety_fields(
     else:
         bldg_type = "GENERAL_STRUCTURE"
 
-    # 2. Elevation / Height from sea level
-    cand_msl = estimate_height_from_sea_level_msl(lat, lon)
-    if is_flyover:
-        cand_msl += 6.0  # Elevated flyover viaduct deck provides +6m vertical clearance above surface grade
+    # 2. Elevation / Height from sea level using city dataset
+    cand_ground_msl = get_city_height_from_sea_level(lat, lon)
+    cand_msl = cand_ground_msl + (6.0 if is_flyover else 0.0)
+    user_msl = get_city_height_from_sea_level(user_lat, user_lon)
+    cand_nearest_city, _, _, _, _ = find_nearest_city_elevation(lat, lon)
+    user_nearest_city, _, _, _, _ = find_nearest_city_elevation(user_lat, user_lon)
+
+    diff_eval = calculate_elevation_difference(
+        loc1_name=loc.name,
+        loc1_height_m=cand_msl,
+        loc2_name="User Location",
+        loc2_height_m=user_msl,
+    )
+    diff_from_user_m = round(cand_msl - user_msl, 1)
+    is_higher = cand_msl > user_msl
+
     transect_heights: list[float] = []
     is_elevated_above = True
-    transect_summary = "Terrain elevation estimated from regional topographic gradient."
+    transect_summary = diff_eval["summary"]
+    flow_pred = (
+        "Calculated downstream drainage gradient directs primary flood torrents along river corridors, "
+        "bypassing elevated destination structures."
+    )
 
     # 5. Calculate or predict flow of flood & middle transect heights
     if active_flood_events:
@@ -155,27 +180,36 @@ def compute_flood_safety_fields(
                 fl_lon, fl_lat = float(m.group(1)), float(m.group(2))
 
         if fl_lat is not None and fl_lon is not None:
-            cand_msl, transect_heights, is_elevated_above, transect_summary = evaluate_flood_transect_heights(
-                fl_lat, fl_lon, user_lat, user_lon, lat, lon
+            transect_res = compute_elevation_between_crisis_and_user(
+                crisis_lat=fl_lat,
+                crisis_lon=fl_lon,
+                user_lat=user_lat,
+                user_lon=user_lon,
             )
-            if is_flyover:
-                cand_msl += 6.0
-                is_elevated_above = True
-                transect_summary = f"Elevated Flyover Deck ({cand_msl:.1f} m MSL) provides vertical clearance above flood transect."
+            transect_heights = transect_res.middle_heights_msl
+            is_elevated_above = cand_msl >= (transect_res.avg_middle_height_msl + 1.0)
+            transect_summary = (
+                f"{diff_eval['summary']} Intermediate flood transect ({transect_res.min_middle_height_msl:.1f}–"
+                f"{transect_res.max_middle_height_msl:.1f} m MSL) from {transect_res.crisis_start_nearest_city}."
+            )
+            flow_pred = transect_res.flow_prediction_summary
 
     # 3. Safety factor
     is_open = any(k in cat for k in ("OPEN_GROUND", "PARK", "PLAYGROUND", "FIELD"))
-    if is_open:
+    if is_open and not is_higher:
         safety_factor = "LOW_RETENTION_RISK: Low-lying open grounds act as retention basins during severe runoff."
-    elif is_elevated_above and is_safe_bldg:
-        safety_factor = "HIGH_SAFETY: Elevated structure situated above anticipated flood accumulation depth."
+    elif is_higher and is_safe_bldg:
+        safety_factor = (
+            f"HIGH_SAFETY: Located at {cand_msl:.1f} m MSL (+{diff_from_user_m:.1f} m higher than user in {user_nearest_city}); "
+            "elevated above anticipated flood accumulation depth."
+        )
+    elif is_higher:
+        safety_factor = (
+            f"ELEVATED_GROUND_SAFETY: Located at {cand_msl:.1f} m MSL (+{diff_from_user_m:.1f} m higher than user); "
+            "natural terrain height advantage."
+        )
     else:
-        safety_factor = "MODERATE: Plinth elevation must be verified on-site against local water surge."
-
-    flow_pred = (
-        "Calculated downstream drainage gradient directs primary flood torrents along river corridors, "
-        "bypassing elevated destination structures."
-    )
+        safety_factor = f"MODERATE: Plinth elevation must be verified on-site ({diff_eval['summary']})."
 
     return FloodSafetyFields(
         distance_from_user_km=round(distance_km, 3),
@@ -187,6 +221,9 @@ def compute_flood_safety_fields(
         middle_transect_heights_msl=transect_heights,
         is_elevated_above_transect=is_elevated_above,
         transect_summary=transect_summary,
+        elevation_difference_from_user_m=diff_from_user_m,
+        is_higher_than_user=is_higher,
+        nearest_city=cand_nearest_city,
     )
 
 
@@ -237,6 +274,90 @@ def compute_cyclone_safety_fields(
     )
 
 
+def is_real_location_suitable_for_crisis(
+    loc: SafeLocation,
+    crisis: CrisisType,
+    suit_class: SuitabilityClassification,
+    safe_pts: float,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
+) -> bool:
+    """
+    Validates whether a physical safe location meets the strict disaster-specific criteria:
+    - Eliminates hypothetical / synthetic entries (coordinates or dynamic refuge zone in name).
+    - Excludes NOT_RECOMMENDED or EXCLUDED classifications.
+    - Earthquake (1.a): ONLY open places (gardens, fields, roads, grounds, stadiums) safe from building collapse/falling debris;
+      in hilly areas, low stone crushing / landslide risk. Enclosed buildings/flyovers are excluded.
+    - Flood (3.b): ONLY high-elevation safe buildings (hospitals, government complexes, colleges), elevated flyovers,
+      and high-ground open fields having more height than the user's location.
+      Strictly excludes low-lying open grounds, parks, gardens that get inundated.
+    - Cyclone / Sea Typhoon (3.c): ONLY engineered cyclone shelters (MPCS on stilts) and reinforced solid inland facilities;
+      strictly excludes open beaches, open grounds, parks, and flyovers.
+    """
+    name_str = (loc.name or "").strip()
+    name_lower = name_str.lower()
+    if not name_str or len(name_str) < 3:
+        return False
+    if "(" in name_lower and ")" in name_lower and any(c.isdigit() for c in name_lower):
+        if "refuge zone" in name_lower or "assembly zone" in name_lower or "platform" in name_lower:
+            return False
+
+    if suit_class in (
+        SuitabilityClassification.EXCLUDED,
+        SuitabilityClassification.NOT_RECOMMENDED,
+    ):
+        return False
+    if safe_pts < 30.0:
+        return False
+
+    cat = (loc.category or "").upper()
+    is_open = (
+        cat in ("OPEN_GROUND", "PARK", "PLAYGROUND", "GARDEN", "FIELD", "ROAD", "CAMPUS")
+        or any(w in name_lower for w in ["ground", "park", "garden", "field", "stadium", "maidan", "lawn", "turf", "open assembly"])
+    )
+    is_flyover = (
+        "flyover" in name_lower
+        or "elevated corridor" in name_lower
+        or "elevated deck" in name_lower
+        or "viaduct" in name_lower
+        or cat in ("FLYOVER", "ELEVATED_STRUCTURE")
+    )
+    is_building = (
+        cat in ("HOSPITAL", "SCHOOL", "GOVERNMENT_BUILDING", "COMMUNITY_CENTER", "OFFICIAL_FLOOD_SHELTER")
+        or any(w in name_lower for w in ["hospital", "bhawan", "secretariat", "building", "college", "school", "hall", "complex", "centre", "center", "institute", "university"])
+    )
+
+    if crisis == CrisisType.EARTHQUAKE:
+        if is_flyover:
+            return False
+        if is_building and not is_open:
+            return False
+        return is_open
+
+    elif crisis == CrisisType.FLOOD:
+        if is_open and not (is_flyover or is_building):
+            # Check if this open field has higher elevation than user location
+            if user_lat is not None and user_lon is not None:
+                c_lat, c_lon = extract_location_coordinates(loc)
+                c_h = get_city_height_from_sea_level(c_lat, c_lon)
+                u_h = get_city_height_from_sea_level(user_lat, user_lon)
+                if c_h > u_h + 1.0:
+                    return True
+            return False
+        return is_flyover or is_building or cat in ("OFFICIAL_FLOOD_SHELTER", "GOVERNMENT_BUILDING", "HOSPITAL")
+
+    elif crisis == CrisisType.CYCLONE:
+        if is_open or is_flyover or "beach" in name_lower:
+            return False
+        is_cyclone_shelter = (
+            cat in ("OFFICIAL_CYCLONE_SHELTER", "COMMUNITY_CENTER", "GOVERNMENT_BUILDING", "SCHOOL", "HOSPITAL")
+            or any(w in name_lower for w in ["cyclone", "shelter", "mpcs", "pucca", "relief", "school", "hospital", "bhawan"])
+        )
+        return is_cyclone_shelter
+
+    return True
+
+
 def find_safe_places_near_user(
     session: Session,
     latitude: float,
@@ -250,22 +371,70 @@ def find_safe_places_near_user(
 
     Requirements:
     - Dedicated engine to find safe places near the user location.
-    - Safe location MUST BE UNDER 1 to 5 km (enforced max radius between 1.0 and 5.0 km).
-    - Starts finding safe locations from 100 meter (0.1 km) radius from the user's selected location.
-    - If no location in 100m meets the specification, progressively increases radius until safe locations are found.
+    - Give ONLY real safe locations that physically exist near the user (no hypothetical/synthetic flyovers or zones).
+    - Starts finding safe locations from 100 meter (0.1 km) radius from user location.
+    - If no safe location is found in 100m, progressively increase the radius until real safe locations are found.
+    - Safe location must be under 1 to 5 km (expanding outward from 0.1km up to 5km, with emergency fallback if remote).
+    - Different safe locations for different crisis: only show safe locations matching the chosen or ongoing crisis.
     - Calculates complete disaster-specific fields for Earthquake (1.a), Flood (3.b), and Sea Typhoon (3.c).
     """
-    # Enforce safe location under 1 to 5 km constraint
     capped_max_radius_km = min(5.0, max(1.0, float(max_radius_km)))
     search_radius_m = capped_max_radius_km * 1000.0
 
     user_geog = func.ST_SetSRID(func.ST_MakePoint(longitude, latitude), 4326).cast(Geography)
     dist_m_col = func.ST_Distance(SafeLocation.location.cast(Geography), user_geog).label("distance_m")
 
-    # 1. Ensure dynamic candidate locations exist near user coordinates
+    # 1. Purge any historical synthetic/placeholder locations
+    try:
+        session.execute(
+            delete(SafeLocation).where(
+                or_(
+                    SafeLocation.name.ilike("%refuge zone (%%"),
+                    SafeLocation.name.ilike("%assembly zone (%%"),
+                )
+            )
+        )
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.debug(f"Synthetic cleanup note: {exc}")
+
+    # 2. Determine active crisis: user selected crisis, or ongoing active crisis near user, or default
+    active_crisis = disaster_type
+    if active_crisis is None:
+        nearby_event = session.scalars(
+            select(CrisisEvent)
+            .where(
+                CrisisEvent.status == CrisisStatus.ACTIVE,
+                func.ST_DWithin(CrisisEvent.location.cast(Geography), user_geog, 150000.0),
+            )
+            .order_by(func.ST_Distance(CrisisEvent.location.cast(Geography), user_geog).asc())
+            .limit(1)
+        ).first()
+        if nearby_event is not None:
+            active_crisis = nearby_event.crisis_type
+        else:
+            any_active = session.scalars(
+                select(CrisisEvent).where(CrisisEvent.status == CrisisStatus.ACTIVE).limit(1)
+            ).first()
+            active_crisis = any_active.crisis_type if any_active is not None else CrisisType.EARTHQUAKE
+
+    # 3. Query active events for this crisis type
+    active_events: list[CrisisEvent] = list(
+        session.scalars(
+            select(CrisisEvent).where(
+                CrisisEvent.crisis_type == active_crisis,
+                CrisisEvent.status == CrisisStatus.ACTIVE,
+            )
+        ).all()
+    )
+
+    # 4. Ingest real OSM candidates dynamically if local density is low
     existing_count = session.scalar(
         select(func.count(SafeLocation.id)).where(
-            func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m)
+            func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m),
+            ~SafeLocation.name.ilike("%refuge zone (%%"),
+            ~SafeLocation.name.ilike("%assembly zone (%%"),
         )
     )
     try:
@@ -280,239 +449,181 @@ def find_safe_places_near_user(
                 latitude=latitude,
                 longitude=longitude,
                 radius_km=capped_max_radius_km,
-                disaster_type=disaster_type,
+                disaster_type=active_crisis,
             )
         except Exception as exc:
             logger.debug(f"Dynamic candidate discovery note: {exc}")
 
-    # 2. Query active crisis events if disaster_type is specified
-    active_events: list[CrisisEvent] = []
-    if disaster_type is not None:
-        active_events = list(
-            session.scalars(
-                select(CrisisEvent).where(
-                    CrisisEvent.crisis_type == disaster_type,
-                    CrisisEvent.status == CrisisStatus.ACTIVE,
-                )
-            ).all()
-        )
+    # 5. Progressive search starting from 100 meters (0.1 km)
+    # Tiers expand progressively: 100m, 250m, 500m, 1km, 2km, 3.5km, 5km (plus safety net if remote)
+    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0, 3.5, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0]
 
-    # 3. Progressive search starting from 100 meters (0.1 km) up to max 5.0 km
-    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0, 3.5, capped_max_radius_km]
-    # Filter unique ascending tiers
-    search_tiers_km = sorted(list(set(t for t in search_tiers_km if t <= capped_max_radius_km)))
-    if capped_max_radius_km not in search_tiers_km:
-        search_tiers_km.append(capped_max_radius_km)
-
-    candidate_rows: list[Any] = []
+    safe_places: list[SafePlaceItem] = []
     effective_radius_km = 0.1
+    sources_seen: set[str] = set()
 
     for tier_km in search_tiers_km:
         tier_m = tier_km * 1000.0
         effective_radius_km = tier_km
+
         tier_query = (
             select(SafeLocation, dist_m_col)
             .options(
                 selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
             )
-            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m))
+            .where(
+                func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m),
+                ~SafeLocation.name.ilike("%refuge zone (%%"),
+                ~SafeLocation.name.ilike("%assembly zone (%%"),
+            )
             .order_by(dist_m_col.asc())
-            .limit(limit)
+            .limit(limit * 3)
         )
         current_tier_rows = session.execute(tier_query).all()
         if not current_tier_rows:
             continue
 
-        # Inspect candidate suitability in this tier
-        tier_suitable_count = 0
-        for r in current_tier_rows:
-            r_loc = r[0]
-            r_dist_km = round(float(r[1]) / 1000.0, 3) if r[1] is not None else 0.0
-            r_lat, r_lon = extract_location_coordinates(r_loc)
+        matching_tier_items: list[SafePlaceItem] = []
 
-            # Evaluate suitability
-            r_class, r_is_excl, _, _, _, _, _, _, _ = evaluate_candidate_suitability(
-                loc=r_loc,
-                lat=r_lat,
-                lon=r_lon,
-                distance_km=r_dist_km,
-                disaster_type=disaster_type or CrisisType.EARTHQUAKE,
+        for row in current_tier_rows:
+            loc: SafeLocation = row[0]
+            dist_m_val = float(row[1]) if row[1] is not None else 0.0
+            dist_km_val = round(dist_m_val / 1000.0, 3)
+            c_lat, c_lon = extract_location_coordinates(loc)
+
+            # Evaluate candidate suitability
+            (
+                suit_class,
+                is_excluded,
+                hard_reasons,
+                evidence,
+                hazards,
+                warnings,
+                missing,
+                score,
+                completeness,
+            ) = evaluate_candidate_suitability(
+                loc=loc,
+                lat=c_lat,
+                lon=c_lon,
+                distance_km=dist_km_val,
+                disaster_type=active_crisis,
                 active_events=active_events,
                 user_lat=latitude,
                 user_lon=longitude,
             )
 
-            # Evaluate specification match points
-            _, r_safe_pts, _, _, _ = calculate_specification_points(
-                loc=r_loc,
-                lat=r_lat,
-                lon=r_lon,
-                distance_km=r_dist_km,
-                disaster_type=disaster_type,
+            # Calculate specification match points (0 - 100)
+            tot_pts, safe_pts, dist_pts, cap_pts, feat_pts = calculate_specification_points(
+                loc=loc,
+                lat=c_lat,
+                lon=c_lon,
+                distance_km=dist_km_val,
+                disaster_type=active_crisis,
                 active_events=active_events,
             )
 
-            # Candidate meets specification if non-excluded, suitable/conditional, and safe points >= 40
-            if (
-                not r_is_excl
-                and r_class in (
-                    SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE,
-                    SuitabilityClassification.CONDITIONALLY_SUITABLE,
-                )
-                and r_safe_pts >= 40.0
+            # Check if this real location is suitable for the specific crisis
+            if not is_real_location_suitable_for_crisis(
+                loc, active_crisis, suit_class, safe_pts, user_lat=latitude, user_lon=longitude
             ):
-                tier_suitable_count += 1
+                continue
 
-        candidate_rows = current_tier_rows
-
-        # If at least one location meets the specification in this tier, stop expanding!
-        if tier_suitable_count >= 1:
-            break
-
-    # If no tier matched or fewer than 2 candidates, grab all candidates up to max_radius
-    if not candidate_rows or len(candidate_rows) < 2:
-        fallback_query = (
-            select(SafeLocation, dist_m_col)
-            .options(
-                selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
-            )
-            .where(func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, search_radius_m))
-            .order_by(dist_m_col.asc())
-            .limit(limit)
-        )
-        candidate_rows = session.execute(fallback_query).all()
-        effective_radius_km = capped_max_radius_km
-
-    # 4. Build evaluated SafePlaceItem list with complete disaster field calculations
-    safe_places: list[SafePlaceItem] = []
-    sources_seen: set[str] = set()
-
-    for row in candidate_rows:
-        loc: SafeLocation = row[0]
-        dist_m_val = float(row[1]) if row[1] is not None else 0.0
-        dist_km_val = round(dist_m_val / 1000.0, 3)
-        c_lat, c_lon = extract_location_coordinates(loc)
-
-        # Evaluate suitability
-        active_disaster = disaster_type or CrisisType.EARTHQUAKE
-        (
-            suit_class,
-            is_excluded,
-            hard_reasons,
-            evidence,
-            hazards,
-            warnings,
-            missing,
-            score,
-            completeness,
-        ) = evaluate_candidate_suitability(
-            loc=loc,
-            lat=c_lat,
-            lon=c_lon,
-            distance_km=dist_km_val,
-            disaster_type=active_disaster,
-            active_events=active_events,
-            user_lat=latitude,
-            user_lon=longitude,
-        )
-
-        # Calculate specification match points (0 - 100)
-        tot_pts, safe_pts, dist_pts, cap_pts, feat_pts = calculate_specification_points(
-            loc=loc,
-            lat=c_lat,
-            lon=c_lon,
-            distance_km=dist_km_val,
-            disaster_type=disaster_type,
-            active_events=active_events,
-        )
-
-        spec_points = SpecificationMatchPoints(
-            distance_points=dist_pts,
-            safety_factor_points=safe_pts,
-            availability_points=cap_pts,
-            features_points=feat_pts,
-            total_points=tot_pts,
-        )
-
-        # 1.a. Earthquake fields
-        eq_fields = compute_earthquake_safety_fields(
-            loc=loc, lat=c_lat, lon=c_lon, distance_km=dist_km_val
-        )
-
-        # 3.b. Flood fields
-        fl_fields = compute_flood_safety_fields(
-            loc=loc,
-            lat=c_lat,
-            lon=c_lon,
-            distance_km=dist_km_val,
-            active_flood_events=active_events if disaster_type == CrisisType.FLOOD else [],
-            user_lat=latitude,
-            user_lon=longitude,
-        )
-
-        # 3.c. Cyclone fields
-        cyc_fields = compute_cyclone_safety_fields(
-            loc=loc, lat=c_lat, lon=c_lon, distance_km=dist_km_val
-        )
-
-        # Format source summaries
-        src_summaries: list[SafeLocationSourceSummary] = []
-        for ref in loc.source_references:
-            d_code = ref.data_source.code if ref.data_source else "UNKNOWN"
-            d_name = ref.data_source.name if ref.data_source else "Unknown Data Source"
-            sources_seen.add(d_name)
-            src_summaries.append(
-                SafeLocationSourceSummary(
-                    data_source_id=ref.data_source_id,
-                    data_source_code=d_code,
-                    data_source_name=d_name,
-                    external_feature_id=ref.external_feature_id,
-                    source_url=ref.source_url,
-                    last_seen_at=ref.last_seen_at,
-                    verification_detail=ref.verification_detail,
-                    properties=ref.properties,
-                )
-            )
-
-        v_detail = "OFFICIALLY_VERIFIED" if loc.verification_status == VerificationStatus.VERIFIED else "UNVERIFIED"
-        loc_geojson = safe_postgis_to_geojson(loc.location) or {"type": "Point", "coordinates": [c_lon, c_lat]}
-        bound_geojson = safe_postgis_to_geojson(loc.boundary) if loc.boundary is not None else None
-
-        safe_places.append(
-            SafePlaceItem(
-                id=loc.id,
-                name=loc.name,
-                category=loc.category,
-                designation_status=loc.designation_status,
-                verification_status=loc.verification_status,
-                verification_detail=v_detail,
-                location=loc_geojson,
-                boundary=bound_geojson,
-                structural_condition=loc.structural_condition,
-                accessibility_status=loc.accessibility_status,
-                capacity=loc.capacity,
-                distance_km=dist_km_val,
-                distance_m=dist_m_val,
-                suitability_classification=suit_class,
-                suitability_score=score,
-                specification_points=spec_points,
-                total_points=tot_pts,
+            spec_points = SpecificationMatchPoints(
                 distance_points=dist_pts,
-                safety_points=safe_pts,
+                safety_factor_points=safe_pts,
                 availability_points=cap_pts,
                 features_points=feat_pts,
-                earthquake_fields=eq_fields,
-                flood_fields=fl_fields,
-                cyclone_fields=cyc_fields,
-                suitability_evidence=evidence,
-                key_hazards=hazards,
-                warnings=warnings,
-                missing_information=extract_missing_information(loc),
-                sources=src_summaries,
-                created_at=loc.created_at,
-                updated_at=loc.updated_at,
+                total_points=tot_pts,
             )
-        )
+
+            # 1.a Earthquake fields
+            eq_fields = compute_earthquake_safety_fields(
+                loc=loc, lat=c_lat, lon=c_lon, distance_km=dist_km_val
+            )
+
+            # 3.b Flood fields
+            fl_fields = compute_flood_safety_fields(
+                loc=loc,
+                lat=c_lat,
+                lon=c_lon,
+                distance_km=dist_km_val,
+                active_flood_events=active_events if active_crisis == CrisisType.FLOOD else [],
+                user_lat=latitude,
+                user_lon=longitude,
+            )
+
+            # 3.c Cyclone fields
+            cyc_fields = compute_cyclone_safety_fields(
+                loc=loc, lat=c_lat, lon=c_lon, distance_km=dist_km_val
+            )
+
+            # Format source summaries
+            src_summaries: list[SafeLocationSourceSummary] = []
+            for ref in loc.source_references:
+                d_code = ref.data_source.code if ref.data_source else "UNKNOWN"
+                d_name = ref.data_source.name if ref.data_source else "Unknown Data Source"
+                sources_seen.add(d_name)
+                ref_v_detail = (ref.properties.get("verification_detail") if ref.properties else None) or (
+                    "OFFICIALLY_VERIFIED" if loc.verification_status == VerificationStatus.VERIFIED else "UNVERIFIED"
+                )
+                src_summaries.append(
+                    SafeLocationSourceSummary(
+                        data_source_id=ref.data_source_id,
+                        data_source_code=d_code,
+                        data_source_name=d_name,
+                        external_feature_id=ref.external_feature_id,
+                        source_url=ref.source_url,
+                        last_seen_at=ref.last_seen_at,
+                        verification_detail=ref_v_detail,
+                        properties=ref.properties,
+                    )
+                )
+
+            v_detail = "OFFICIALLY_VERIFIED" if loc.verification_status == VerificationStatus.VERIFIED else "UNVERIFIED"
+            loc_geojson = safe_postgis_to_geojson(loc.location) or {"type": "Point", "coordinates": [c_lon, c_lat]}
+            bound_geojson = safe_postgis_to_geojson(loc.boundary) if loc.boundary is not None else None
+
+            matching_tier_items.append(
+                SafePlaceItem(
+                    id=loc.id,
+                    name=loc.name,
+                    category=loc.category,
+                    designation_status=loc.designation_status,
+                    verification_status=loc.verification_status,
+                    verification_detail=v_detail,
+                    location=loc_geojson,
+                    boundary=bound_geojson,
+                    structural_condition=loc.structural_condition,
+                    accessibility_status=loc.accessibility_status,
+                    capacity=loc.capacity,
+                    distance_km=dist_km_val,
+                    distance_m=dist_m_val,
+                    suitability_classification=suit_class,
+                    suitability_score=score,
+                    specification_points=spec_points,
+                    total_points=tot_pts,
+                    distance_points=dist_pts,
+                    safety_points=safe_pts,
+                    availability_points=cap_pts,
+                    features_points=feat_pts,
+                    earthquake_fields=eq_fields,
+                    flood_fields=fl_fields,
+                    cyclone_fields=cyc_fields,
+                    suitability_evidence=evidence,
+                    key_hazards=hazards,
+                    warnings=warnings,
+                    missing_information=extract_missing_information(loc),
+                    sources=src_summaries,
+                    created_at=loc.created_at,
+                    updated_at=loc.updated_at,
+                )
+            )
+
+        if matching_tier_items:
+            # We found matching real safe locations for this crisis in this tier!
+            safe_places = matching_tier_items[:limit]
+            break
 
     # Sort safe places: prioritize total points and suitable classification
     def sort_key(item: SafePlaceItem) -> tuple[int, float, float]:

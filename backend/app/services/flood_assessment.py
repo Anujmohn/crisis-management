@@ -120,12 +120,19 @@ def classify_geographical_environment(
             )
             return GeographicalEnvironment.PLAIN_OR_FLAT, notes
 
-    # 2. Regional physiographic boundary heuristic for India
+    # 2. Elevation check: if elevation is under 450 meters MSL, it is a plain/plateau basin (not a rugged mountain ridge)
+    from app.services.city_elevation_data import get_city_height_from_sea_level
+    current_elev = elevation_m if elevation_m is not None else get_city_height_from_sea_level(latitude, longitude)
+    if current_elev is not None and current_elev < 450.0:
+        notes.append(f"Classified as PLAIN_OR_FLAT based on ground elevation ({current_elev:.1f} m MSL).")
+        return GeographicalEnvironment.PLAIN_OR_FLAT, notes
+
+    # 3. Regional physiographic boundary heuristic for India
     # Himalayan & North-Eastern Mountain Arc
     is_himalayan_arc = (
-        (27.0 <= latitude <= 37.0 and 73.0 <= longitude <= 81.0)  # Western / Central Himalayas
+        (29.8 <= latitude <= 37.0 and 73.0 <= longitude <= 81.0)  # Western / Central Himalayas (HP, Uttarakhand, J&K)
         or (26.5 <= latitude <= 29.5 and 88.0 <= longitude <= 97.5)  # Eastern Himalayas & Arunachal
-        or (23.0 <= latitude <= 26.5 and 91.5 <= longitude <= 95.5)  # Meghalaya, Nagaland, Manipur hills
+        or (24.0 <= latitude <= 27.5 and 91.5 <= longitude <= 95.5)  # Meghalaya, Nagaland, Manipur hills
     )
     # Western Ghats escarpment
     is_western_ghats = (8.5 <= latitude <= 21.0) and (73.2 <= longitude <= 75.8)

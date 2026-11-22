@@ -20,6 +20,7 @@ from app.services.safe_place_engine import (
     compute_earthquake_safety_fields,
     compute_flood_safety_fields,
     find_safe_places_near_user,
+    is_real_location_suitable_for_crisis,
 )
 
 
@@ -125,6 +126,91 @@ class SafePlaceEngineTests(unittest.TestCase):
         openapi_schema = app.openapi()
         paths = openapi_schema.get("paths", {})
         self.assertIn("/api/v1/safe-locations/find-safe-places", paths)
+
+    def test_crisis_suitability_filter_isolation(self):
+        # 1. Reject synthetic / hypothetical names
+        fake_flyover = SafeLocation(
+            id=uuid.uuid4(),
+            name="Elevated Flyover Platform & Refuge Zone (25.594, 85.138)",
+            category="FLYOVER",
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                fake_flyover, CrisisType.FLOOD, SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, 85.0
+            )
+        )
+
+        fake_ground = SafeLocation(
+            id=uuid.uuid4(),
+            name="Public Garden & Open Lawn Assembly Zone (25.594, 85.138)",
+            category="OPEN_GROUND",
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                fake_ground, CrisisType.EARTHQUAKE, SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, 90.0
+            )
+        )
+
+        # 2. Real open park/garden: valid for Earthquake, NOT for Flood or Cyclone
+        real_park = SafeLocation(
+            id=uuid.uuid4(),
+            name="Lodhi Gardens Public Grounds",
+            category="OPEN_GROUND",
+        )
+        self.assertTrue(
+            is_real_location_suitable_for_crisis(
+                real_park, CrisisType.EARTHQUAKE, SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, 90.0
+            )
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                real_park, CrisisType.FLOOD, SuitabilityClassification.CONDITIONALLY_SUITABLE, 50.0
+            )
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                real_park, CrisisType.CYCLONE, SuitabilityClassification.CONDITIONALLY_SUITABLE, 50.0
+            )
+        )
+
+        # 3. Real elevated flyover: valid for Flood, NOT for Earthquake or Cyclone
+        real_flyover = SafeLocation(
+            id=uuid.uuid4(),
+            name="Barapullah Elevated Corridor, New Delhi",
+            category="FLYOVER",
+        )
+        self.assertTrue(
+            is_real_location_suitable_for_crisis(
+                real_flyover, CrisisType.FLOOD, SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, 90.0
+            )
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                real_flyover, CrisisType.EARTHQUAKE, SuitabilityClassification.CONDITIONALLY_SUITABLE, 60.0
+            )
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                real_flyover, CrisisType.CYCLONE, SuitabilityClassification.CONDITIONALLY_SUITABLE, 60.0
+            )
+        )
+
+        # 4. Real multi-purpose cyclone shelter: valid for Cyclone, NOT for Earthquake (enclosed structure)
+        real_cyclone_shelter = SafeLocation(
+            id=uuid.uuid4(),
+            name="Puri Multipurpose Cyclone Shelter MPCS-04",
+            category="OFFICIAL_CYCLONE_SHELTER",
+        )
+        self.assertTrue(
+            is_real_location_suitable_for_crisis(
+                real_cyclone_shelter, CrisisType.CYCLONE, SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, 95.0
+            )
+        )
+        self.assertFalse(
+            is_real_location_suitable_for_crisis(
+                real_cyclone_shelter, CrisisType.EARTHQUAKE, SuitabilityClassification.CONDITIONALLY_SUITABLE, 60.0
+            )
+        )
 
 
 if __name__ == "__main__":
